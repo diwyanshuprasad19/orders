@@ -239,26 +239,21 @@ def test_refund_happy_and_validation(client):
     ok = client.post("/v1/refunds", json={"order_id": oid, "amount_cents": 10, "reason": "partial"})
     assert ok.status_code == 200
     assert ok.json()["status"] == "pending"
-    assert client.post(
-        "/v1/refunds", json={"order_id": "missing", "amount_cents": 1}
-    ).status_code == 404
+    assert (
+        client.post("/v1/refunds", json={"order_id": "missing", "amount_cents": 1}).status_code
+        == 404
+    )
     # cannot refund again from refunded
     created2 = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
     oid2 = created2.json()["id"]
-    assert client.post(
-        "/v1/refunds", json={"order_id": oid2, "amount_cents": 1}
-    ).status_code == 409
+    assert client.post("/v1/refunds", json={"order_id": oid2, "amount_cents": 1}).status_code == 409
 
 
 def test_pay_amount_edges(client):
     created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 100})
     oid = created.json()["id"]
-    assert (
-        client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": -1}).status_code == 400
-    )
-    assert (
-        client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": 9999}).status_code == 409
-    )
+    assert client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": -1}).status_code == 400
+    assert client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": 9999}).status_code == 409
     assert client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": 50}).status_code == 200
 
 
@@ -268,6 +263,7 @@ def test_legacy_orders_and_insufficient_stock(client):
     oid = legacy.json()["order_id"]
     assert client.get(f"/orders/{oid}").status_code == 200
     assert client.get("/orders/missing").status_code == 404
+
     # force insufficient via fake stock
     class LowTransport(httpx.BaseTransport):
         def handle_request(self, request: httpx.Request) -> httpx.Response:
@@ -278,12 +274,13 @@ def test_legacy_orders_and_insufficient_stock(client):
                 )
             return httpx.Response(404)
 
-    from orders_app.inventory_client import InventoryClient
-    from orders_app.app import create_app
-    from orders_app.db import Base, get_db
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
+
+    from orders_app.app import create_app
+    from orders_app.db import Base, get_db
+    from orders_app.inventory_client import InventoryClient
 
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -362,11 +359,12 @@ def test_reserve_http_error_and_client_json_edges():
     inv3.close()
 
     # API: reserve 409 → order 409
-    from orders_app.app import create_app
-    from orders_app.db import Base, get_db
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
+
+    from orders_app.app import create_app
+    from orders_app.db import Base, get_db
 
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -415,13 +413,15 @@ def test_get_db_close_path():
 
 
 def test_service_reserve_circuit_and_refund_amount(client):
-    from orders_app import models, services
-    from orders_app.inventory_client import CircuitOpenError, InventoryClient
-    from orders_app.db import Base
+    from unittest.mock import MagicMock
+
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
-    from unittest.mock import MagicMock
+
+    from orders_app import models, services
+    from orders_app.db import Base
+    from orders_app.inventory_client import CircuitOpenError, InventoryClient
 
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
@@ -436,18 +436,14 @@ def test_service_reserve_circuit_and_refund_amount(client):
     inv.get_stock.return_value = {"available": 10, "http_status": 200}
     inv.reserve.side_effect = CircuitOpenError(1.5)
     with pytest.raises(services.OrderError) as ei:
-        services.create_order(
-            db, inv, sku="W", qty=1, customer_id=None, unit_price_cents=10
-        )
+        services.create_order(db, inv, sku="W", qty=1, customer_id=None, unit_price_cents=10)
     assert ei.value.code == 503
 
     inv2 = MagicMock(spec=InventoryClient)
     inv2.get_stock.return_value = {"available": 10, "http_status": 200}
     inv2.reserve.side_effect = RuntimeError("boom")
     with pytest.raises(services.OrderError) as ei2:
-        services.create_order(
-            db, inv2, sku="W", qty=1, customer_id=None, unit_price_cents=10
-        )
+        services.create_order(db, inv2, sku="W", qty=1, customer_id=None, unit_price_cents=10)
     assert ei2.value.code == 502
 
     order = models.Order(sku="W", qty=1, status="paid", total_cents=100)
@@ -461,9 +457,10 @@ def test_service_reserve_circuit_and_refund_amount(client):
 
 
 def test_cancel_invalid_and_main_and_reserve_5xx(monkeypatch):
+    import httpx
+
     import orders_app.app as app_mod
     from orders_app.inventory_client import InventoryClient
-    import httpx
 
     class T5xx(httpx.BaseTransport):
         def handle_request(self, request: httpx.Request) -> httpx.Response:
