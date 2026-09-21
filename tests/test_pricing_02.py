@@ -1,6 +1,4 @@
-from orders_app.pricing.price_table_02 import (
-    summarize_02, apply_discount_02, tax_02
-)
+from orders_app.pricing.price_table_02 import apply_discount_02, summarize_02, tax_02
 
 
 def test_pricing_02():

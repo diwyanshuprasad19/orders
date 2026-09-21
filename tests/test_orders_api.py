@@ -9,8 +9,8 @@ from sqlalchemy.pool import StaticPool
 
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
 
-from orders_app.db import Base, get_db
 from orders_app.app import create_app
+from orders_app.db import Base, get_db
 from orders_app.inventory_client import InventoryClient
 from orders_app.seed import seed_demo
 
@@ -86,6 +86,7 @@ def test_create_order(client):
 
 def test_circuit_opens(client):
     client.transport_fake.fail = True  # type: ignore
+
     # force failures through breaker (httpx raises on 503 via raise_for_status in get_stock path for 5xx)
     # Our fake returns 503 without raise in get_stock for stock path - adjust: get_stock only raises on raise_for_status for non-404
     # Make transport raise

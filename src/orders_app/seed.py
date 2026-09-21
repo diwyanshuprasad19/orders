@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from orders_app import models
 
-
 DEMO_CUSTOMERS = [
     ("alice@example.com", "Alice Example"),
     ("bob@example.com", "Bob Example"),
