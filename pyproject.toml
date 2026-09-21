@@ -4,14 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orders"
-version = "0.1.0"
-description = "Orders microservice — calls inventory behind a circuit breaker"
+version = "0.2.0"
+description = "Production orders microservice — FastAPI + Alembic + circuit breaker"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "flask>=3.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "psycopg[binary]>=3.2",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
   "httpx>=0.27",
-  "gunicorn>=23.0",
+  "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
