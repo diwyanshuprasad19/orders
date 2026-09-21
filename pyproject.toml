@@ -37,6 +37,17 @@ target-version = "py312"
 [tool.coverage.run]
 omit = [
   "*/catalog/*",
+  "*/catalogs/*",
   "*/workflows/*",
   "*/policies/*",
+  "*/rules/*",
+  "*/fixtures/*",
+  "*/contracts/*",
+  "*/pricing/*",
+  "*/readiness/*",
 ]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
