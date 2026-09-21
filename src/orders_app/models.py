@@ -19,7 +19,7 @@ class Customer(Base):
     email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    orders: Mapped[list["Order"]] = relationship(back_populates="customer")
+    orders: Mapped[list[Order]] = relationship(back_populates="customer")
 
 
 class Order(Base):
@@ -36,9 +36,9 @@ class Order(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     customer: Mapped[Customer | None] = relationship(back_populates="orders")
-    events: Mapped[list["OrderEvent"]] = relationship(back_populates="order")
-    payments: Mapped[list["Payment"]] = relationship(back_populates="order")
-    shipments: Mapped[list["Shipment"]] = relationship(back_populates="order")
+    events: Mapped[list[OrderEvent]] = relationship(back_populates="order")
+    payments: Mapped[list[Payment]] = relationship(back_populates="order")
+    shipments: Mapped[list[Shipment]] = relationship(back_populates="order")
 
 
 class OrderEvent(Base):

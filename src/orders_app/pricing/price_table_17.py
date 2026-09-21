@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-PRICES_17: dict[str, int] = {
-    f"SKU-17-{j:03d}": 100 * 17 + j * 17
-    for j in range(1, 51)
-}
+PRICES_17: dict[str, int] = {f"SKU-17-{j:03d}": 100 * 17 + j * 17 for j in range(1, 51)}
 
 
 def price_of_17(sku: str) -> int | None:

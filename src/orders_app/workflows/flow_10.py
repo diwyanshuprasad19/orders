@@ -15,14 +15,16 @@ class Step:
 @dataclass
 class Workflow10:
     code: str = "flow_10"
-    steps: list[Step] = field(default_factory=lambda: [
-        Step("validate", timeout_sec=5),
-        Step("reserve_inventory", timeout_sec=10),
-        Step("authorize_payment", timeout_sec=18),
-        Step("capture_payment", optional=False),
-        Step("create_shipment", timeout_sec=30),
-        Step("notify_customer", optional=True),
-    ])
+    steps: list[Step] = field(
+        default_factory=lambda: [
+            Step("validate", timeout_sec=5),
+            Step("reserve_inventory", timeout_sec=10),
+            Step("authorize_payment", timeout_sec=18),
+            Step("capture_payment", optional=False),
+            Step("create_shipment", timeout_sec=30),
+            Step("notify_customer", optional=True),
+        ]
+    )
 
     def step_names(self) -> list[str]:
         return [s.name for s in self.steps]
@@ -33,7 +35,10 @@ class Workflow10:
     def describe(self) -> dict:
         return {
             "code": self.code,
-            "steps": [{"name": s.name, "optional": s.optional, "timeout": s.timeout_sec} for s in self.steps],
+            "steps": [
+                {"name": s.name, "optional": s.optional, "timeout": s.timeout_sec}
+                for s in self.steps
+            ],
             "index": 10,
         }
 

@@ -36,9 +36,7 @@ def create_order(
     try:
         stock = client.get_stock(sku)
     except CircuitOpenError as e:
-        raise OrderError(
-            f"inventory_unavailable retry_after={e.retry_after}", 503
-        ) from e
+        raise OrderError(f"inventory_unavailable retry_after={e.retry_after}", 503) from e
     except Exception as e:
         raise OrderError(f"inventory_error: {e}", 502) from e
 
@@ -50,9 +48,7 @@ def create_order(
     try:
         reserved = client.reserve(sku, qty)
     except CircuitOpenError as e:
-        raise OrderError(
-            f"inventory_unavailable retry_after={e.retry_after}", 503
-        ) from e
+        raise OrderError(f"inventory_unavailable retry_after={e.retry_after}", 503) from e
     except Exception as e:
         raise OrderError(f"inventory_error: {e}", 502) from e
 

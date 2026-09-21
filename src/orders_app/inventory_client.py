@@ -11,6 +11,7 @@ if _DT.is_dir():
     sys.path.insert(0, str(_DT))
 
 from distributed_tracing import CircuitBreaker, CircuitOpenError, inject_context
+
 from orders_app.settings import get_settings
 
 # re-export for app
@@ -42,9 +43,7 @@ class InventoryClient:
 
     def get_stock(self, sku: str) -> dict[str, Any]:
         def _call() -> dict[str, Any]:
-            r = self._client.get(
-                f"{self.base_url}/stock/{sku}", headers=self._headers()
-            )
+            r = self._client.get(f"{self.base_url}/stock/{sku}", headers=self._headers())
             if r.status_code == 404:
                 return {"error": "not_found", "sku": sku, "http_status": 404}
             r.raise_for_status()

@@ -31,7 +31,7 @@ CONTRACT_05 = {
         "ord-case-5-21",
         "ord-case-5-22",
         "ord-case-5-23",
-        "ord-case-5-24"
+        "ord-case-5-24",
     ],
 }
 
