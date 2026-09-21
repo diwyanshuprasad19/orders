@@ -1,0 +1,27 @@
+name: ci-quality
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: diwyanshuprasad19/distributed-tracing
+          path: distributed-tracing
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ./distributed-tracing && pip install -e ".[dev]" ruff
+      - run: ruff check src tests || true
+      - run: pytest tests/ -q --tb=line
+      - uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
