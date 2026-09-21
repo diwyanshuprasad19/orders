@@ -203,3 +203,319 @@ def test_remote_bad_json(client):
 def test_empty_json_body(client):
     r = client.post("/v1/orders", content=b"{}", headers={"content-type": "application/json"})
     assert r.status_code in {400, 422}
+
+
+def test_ready_metrics_seed_lists_and_crud(client):
+    assert client.get("/health").status_code == 200
+    assert client.get("/ready").status_code == 200
+    assert client.get("/metrics").status_code == 200
+    assert client.post("/v1/seed").status_code == 200
+    assert client.get("/v1/orders").status_code == 200
+    assert client.get("/v1/payments").status_code == 200
+    assert client.get("/v1/shipments").status_code == 200
+    cust = client.post("/v1/customers", json={"email": "core@example.com", "name": "Core"})
+    assert cust.status_code == 201
+    cid = cust.json()["id"]
+    assert client.get(f"/v1/customers/{cid}").status_code == 200
+    assert client.get("/v1/customers/missing").status_code == 404
+
+
+def test_get_order_not_found_and_happy_path(client):
+    assert client.get("/v1/orders/nope").status_code == 404
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 25})
+    oid = created.json()["id"]
+    assert client.get(f"/v1/orders/{oid}").status_code == 200
+    assert client.patch(f"/v1/orders/{oid}/status", json={"status": "paid"}).status_code == 200
+    assert client.patch("/v1/orders/nope/status", json={"status": "paid"}).status_code == 404
+    assert client.post("/v1/orders/nope/cancel").status_code == 404
+    assert client.post("/v1/orders/nope/pay", json={}).status_code == 404
+    assert client.post("/v1/orders/nope/ship", json={"carrier": "X"}).status_code == 404
+
+
+def test_refund_happy_and_validation(client):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    oid = created.json()["id"]
+    assert client.post(f"/v1/orders/{oid}/pay", json={}).status_code == 200
+    ok = client.post("/v1/refunds", json={"order_id": oid, "amount_cents": 10, "reason": "partial"})
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "pending"
+    assert client.post(
+        "/v1/refunds", json={"order_id": "missing", "amount_cents": 1}
+    ).status_code == 404
+    # cannot refund again from refunded
+    created2 = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    oid2 = created2.json()["id"]
+    assert client.post(
+        "/v1/refunds", json={"order_id": oid2, "amount_cents": 1}
+    ).status_code == 409
+
+
+def test_pay_amount_edges(client):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 100})
+    oid = created.json()["id"]
+    assert (
+        client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": -1}).status_code == 400
+    )
+    assert (
+        client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": 9999}).status_code == 409
+    )
+    assert client.post(f"/v1/orders/{oid}/pay", json={"amount_cents": 50}).status_code == 200
+
+
+def test_legacy_orders_and_insufficient_stock(client):
+    legacy = client.post("/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 10})
+    assert legacy.status_code == 201
+    oid = legacy.json()["order_id"]
+    assert client.get(f"/orders/{oid}").status_code == 200
+    assert client.get("/orders/missing").status_code == 404
+    # force insufficient via fake stock
+    class LowTransport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/stock/"):
+                return httpx.Response(
+                    200,
+                    json={"sku": "WIDGET-1", "quantity": 1, "reserved": 0, "available": 0},
+                )
+            return httpx.Response(404)
+
+    from orders_app.inventory_client import InventoryClient
+    from orders_app.app import create_app
+    from orders_app.db import Base, get_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def _get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    inv = InventoryClient(
+        base_url="http://inventory.test",
+        failure_threshold=5,
+        transport=LowTransport(),
+    )
+    app = create_app(inventory=inv)
+    app.dependency_overrides[get_db] = _get_db
+    with TestClient(app) as c:
+        r = c.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1})
+        assert r.status_code == 409
+
+
+def test_reserve_http_error_and_client_json_edges():
+    """Cover reserve 4xx mapping and InventoryClient JSON edge branches."""
+    from orders_app.inventory_client import InventoryClient
+
+    class Transport(httpx.BaseTransport):
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/stock/"):
+                if self.mode == "stock_list":
+                    return httpx.Response(200, content=b'["x"]')
+                return httpx.Response(
+                    200,
+                    json={"sku": "WIDGET-1", "available": 10, "quantity": 10, "reserved": 0},
+                )
+            if self.mode == "reserve_409":
+                return httpx.Response(409, json={"error": "insufficient"})
+            if self.mode == "reserve_list":
+                return httpx.Response(200, content=b'["x"]')
+            if self.mode == "reserve_bad_json":
+                return httpx.Response(200, content=b"{not-json")
+            return httpx.Response(404)
+
+    # unit: non-object stock JSON
+    inv = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=Transport("stock_list")
+    )
+    with pytest.raises(ConnectionError):
+        inv.get_stock("WIDGET-1")
+    inv.close()
+
+    # unit: reserve list / bad json
+    inv2 = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=Transport("reserve_list")
+    )
+    data = inv2.reserve("WIDGET-1", 1)
+    assert data.get("error") == "invalid_payload" or "http_status" in data
+    inv2.close()
+
+    inv3 = InventoryClient(
+        base_url="http://inventory.test",
+        failure_threshold=5,
+        transport=Transport("reserve_bad_json"),
+    )
+    with pytest.raises(ConnectionError):
+        inv3.reserve("WIDGET-1", 1)
+    inv3.close()
+
+    # API: reserve 409 → order 409
+    from orders_app.app import create_app
+    from orders_app.db import Base, get_db
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def _get_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    inv4 = InventoryClient(
+        base_url="http://inventory.test",
+        failure_threshold=5,
+        transport=Transport("reserve_409"),
+    )
+    app = create_app(inventory=inv4)
+    app.dependency_overrides[get_db] = _get_db
+    with TestClient(app) as c:
+        assert c.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1}).status_code == 409
+    inv4.close()
+
+
+def test_settings_inventory_url_env(monkeypatch):
+    from orders_app.settings import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("INVENTORY_URL", "http://inv.example:9999")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+    s = get_settings()
+    assert s.inventory_url == "http://inv.example:9999"
+    get_settings.cache_clear()
+
+
+def test_get_db_close_path():
+    from orders_app.db import get_db
+
+    gen = get_db()
+    next(gen)
+    gen.close()
+
+
+def test_service_reserve_circuit_and_refund_amount(client):
+    from orders_app import models, services
+    from orders_app.inventory_client import CircuitOpenError, InventoryClient
+    from orders_app.db import Base
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from unittest.mock import MagicMock
+
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+
+    inv = MagicMock(spec=InventoryClient)
+    inv.get_stock.return_value = {"available": 10, "http_status": 200}
+    inv.reserve.side_effect = CircuitOpenError(1.5)
+    with pytest.raises(services.OrderError) as ei:
+        services.create_order(
+            db, inv, sku="W", qty=1, customer_id=None, unit_price_cents=10
+        )
+    assert ei.value.code == 503
+
+    inv2 = MagicMock(spec=InventoryClient)
+    inv2.get_stock.return_value = {"available": 10, "http_status": 200}
+    inv2.reserve.side_effect = RuntimeError("boom")
+    with pytest.raises(services.OrderError) as ei2:
+        services.create_order(
+            db, inv2, sku="W", qty=1, customer_id=None, unit_price_cents=10
+        )
+    assert ei2.value.code == 502
+
+    order = models.Order(sku="W", qty=1, status="paid", total_cents=100)
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    with pytest.raises(services.OrderError) as ei3:
+        services.request_refund(db, order, amount_cents=0, reason="x")
+    assert ei3.value.code == 400
+    db.close()
+
+
+def test_cancel_invalid_and_main_and_reserve_5xx(monkeypatch):
+    import orders_app.app as app_mod
+    from orders_app.inventory_client import InventoryClient
+    import httpx
+
+    class T5xx(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path.startswith("/stock/"):
+                return httpx.Response(
+                    200, json={"sku": "W", "available": 5, "quantity": 5, "reserved": 0}
+                )
+            return httpx.Response(503, json={"error": "down"})
+
+    inv = InventoryClient(base_url="http://x", failure_threshold=5, transport=T5xx())
+    with pytest.raises(Exception):
+        inv.reserve("W", 1)
+    inv.close()
+
+    ran = {}
+
+    def fake_run(*a, **k):
+        ran["ok"] = True
+
+    import uvicorn as uv
+
+    monkeypatch.setattr(uv, "run", fake_run)
+    app_mod.main()
+    assert ran.get("ok") is True
+
+
+def test_cancel_when_already_cancelled(client):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    oid = created.json()["id"]
+    assert client.post(f"/v1/orders/{oid}/cancel").status_code == 200
+    # idempotent cancel (same status) stays 200
+    assert client.post(f"/v1/orders/{oid}/cancel").status_code == 200
+    # cancelled → paid is invalid (covers status OrderError HTTP mapping)
+    assert client.patch(f"/v1/orders/{oid}/status", json={"status": "paid"}).status_code == 409
+
+
+def test_cancel_from_shipped_rejected(client):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    oid = created.json()["id"]
+    assert client.patch(f"/v1/orders/{oid}/status", json={"status": "confirmed"}).status_code == 200
+    assert client.post(f"/v1/orders/{oid}/pay", json={}).status_code == 200
+    assert client.post(f"/v1/orders/{oid}/ship", json={}).status_code == 200
+    # shipped → cancelled not allowed → covers cancel OrderError HTTP mapping
+    assert client.post(f"/v1/orders/{oid}/cancel").status_code == 409
+
+
+def test_legacy_create_order_when_create_fails(client, monkeypatch):
+    from orders_app import services
+
+    def boom(*a, **k):
+        raise services.OrderError("cannot reserve", 409)
+
+    monkeypatch.setattr(services, "create_order", boom)
+    r = client.post("/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 10})
+    assert r.status_code == 409
