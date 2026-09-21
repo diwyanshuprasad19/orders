@@ -33,3 +33,10 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.coverage.run]
+omit = [
+  "*/catalog/*",
+  "*/workflows/*",
+  "*/policies/*",
+]
