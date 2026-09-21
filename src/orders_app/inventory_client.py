@@ -47,7 +47,12 @@ class InventoryClient:
             if r.status_code == 404:
                 return {"error": "not_found", "sku": sku, "http_status": 404}
             r.raise_for_status()
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError as exc:
+                raise ConnectionError(f"inventory returned invalid JSON: {exc}") from exc
+            if not isinstance(data, dict):
+                raise ConnectionError("inventory returned non-object JSON")
             data["http_status"] = r.status_code
             return data
 
@@ -60,10 +65,15 @@ class InventoryClient:
                 json={"sku": sku, "qty": qty},
                 headers=self._headers(),
             )
-            data = r.json() if r.content else {}
-            data["http_status"] = r.status_code
             if r.status_code >= 500:
                 r.raise_for_status()
+            try:
+                data = r.json() if r.content else {}
+            except ValueError as exc:
+                raise ConnectionError(f"inventory returned invalid JSON: {exc}") from exc
+            if not isinstance(data, dict):
+                data = {"error": "invalid_payload", "raw": str(data)}
+            data["http_status"] = r.status_code
             return data
 
         return self.breaker.call(_call)

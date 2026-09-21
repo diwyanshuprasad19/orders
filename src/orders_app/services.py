@@ -92,3 +92,81 @@ def update_status(db: Session, order: models.Order, new_status: str) -> models.O
     db.commit()
     db.refresh(order)
     return order
+
+
+def capture_payment(
+    db: Session,
+    order: models.Order,
+    *,
+    amount_cents: int | None,
+    provider_ref: str | None,
+) -> models.Payment:
+    if "paid" not in VALID_TRANSITIONS.get(order.status, set()):
+        raise OrderError(f"cannot pay from status {order.status}", 409)
+    amount = order.total_cents if amount_cents is None else amount_cents
+    if amount < 0:
+        raise OrderError("amount_cents must be >= 0", 400)
+    if amount > order.total_cents and order.total_cents > 0:
+        raise OrderError("amount exceeds order total", 409)
+    pay_row = models.Payment(
+        order_id=order.id,
+        amount_cents=amount,
+        status="captured",
+        provider_ref=provider_ref,
+    )
+    db.add(pay_row)
+    add_event(db, order, "paid", {"amount_cents": amount})
+    order.status = "paid"
+    db.commit()
+    db.refresh(pay_row)
+    return pay_row
+
+
+def create_shipment(
+    db: Session,
+    order: models.Order,
+    *,
+    carrier: str,
+    tracking: str | None,
+) -> models.Shipment:
+    if "shipped" not in VALID_TRANSITIONS.get(order.status, set()):
+        raise OrderError(f"cannot ship from status {order.status}", 409)
+    ship_row = models.Shipment(
+        order_id=order.id,
+        carrier=carrier,
+        tracking=tracking,
+        status="label_created",
+    )
+    db.add(ship_row)
+    order.status = "shipped"
+    add_event(db, order, "shipped", {"carrier": carrier})
+    db.commit()
+    db.refresh(ship_row)
+    return ship_row
+
+
+def request_refund(
+    db: Session,
+    order: models.Order,
+    *,
+    amount_cents: int,
+    reason: str,
+) -> models.Refund:
+    if "refunded" not in VALID_TRANSITIONS.get(order.status, set()):
+        raise OrderError(f"cannot refund from status {order.status}", 409)
+    if amount_cents <= 0:
+        raise OrderError("amount_cents must be > 0", 400)
+    if order.total_cents > 0 and amount_cents > order.total_cents:
+        raise OrderError("refund exceeds order total", 409)
+    ref = models.Refund(
+        order_id=order.id,
+        amount_cents=amount_cents,
+        reason=reason,
+        status="pending",
+    )
+    db.add(ref)
+    order.status = "refunded"
+    add_event(db, order, "refund_requested", {"amount_cents": amount_cents, "reason": reason})
+    db.commit()
+    db.refresh(ref)
+    return ref
