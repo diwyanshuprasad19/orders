@@ -140,9 +140,7 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         if not order:
             raise HTTPException(404, "not found")
         try:
-            return services.create_shipment(
-                db, order, carrier=body.carrier, tracking=body.tracking
-            )
+            return services.create_shipment(db, order, carrier=body.carrier, tracking=body.tracking)
         except services.OrderError as e:
             raise HTTPException(e.code, str(e)) from e
 
