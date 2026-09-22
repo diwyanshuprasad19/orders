@@ -105,7 +105,7 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         if not order:
             raise HTTPException(404, "not found")
         try:
-            return services.update_status(db, order, body.status)
+            return services.update_status(db, order, body.status, client=client)
         except services.OrderError as e:
             raise HTTPException(e.code, str(e)) from e
 
@@ -115,7 +115,7 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         if not order:
             raise HTTPException(404, "not found")
         try:
-            return services.update_status(db, order, "cancelled")
+            return services.update_status(db, order, "cancelled", client=client)
         except services.OrderError as e:
             raise HTTPException(e.code, str(e)) from e
 
@@ -124,37 +124,25 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         order = db.get(models.Order, order_id)
         if not order:
             raise HTTPException(404, "not found")
-        amount = body.amount_cents if body.amount_cents is not None else order.total_cents
-        pay_row = models.Payment(
-            order_id=order.id,
-            amount_cents=amount,
-            status="captured",
-            provider_ref=body.provider_ref,
-        )
-        db.add(pay_row)
-        services.add_event(db, order, "paid", {"amount_cents": amount})
-        order.status = "paid"
-        db.commit()
-        db.refresh(pay_row)
-        return pay_row
+        try:
+            return services.capture_payment(
+                db,
+                order,
+                amount_cents=body.amount_cents,
+                provider_ref=body.provider_ref,
+            )
+        except services.OrderError as e:
+            raise HTTPException(e.code, str(e)) from e
 
     @app.post("/v1/orders/{order_id}/ship", response_model=schemas.ShipmentOut)
     def ship(order_id: str, body: schemas.ShipIn, db: Session = Depends(get_db)):
         order = db.get(models.Order, order_id)
         if not order:
             raise HTTPException(404, "not found")
-        ship_row = models.Shipment(
-            order_id=order.id,
-            carrier=body.carrier,
-            tracking=body.tracking,
-            status="label_created",
-        )
-        db.add(ship_row)
-        order.status = "shipped"
-        services.add_event(db, order, "shipped", {"carrier": body.carrier})
-        db.commit()
-        db.refresh(ship_row)
-        return ship_row
+        try:
+            return services.create_shipment(db, order, carrier=body.carrier, tracking=body.tracking)
+        except services.OrderError as e:
+            raise HTTPException(e.code, str(e)) from e
 
     @app.get("/v1/customers", response_model=list[schemas.CustomerOut])
     def list_customers(db: Session = Depends(get_db)):
@@ -188,17 +176,12 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         order = db.get(models.Order, body.order_id)
         if not order:
             raise HTTPException(404, "order not found")
-        ref = models.Refund(
-            order_id=order.id,
-            amount_cents=body.amount_cents,
-            reason=body.reason,
-            status="pending",
-        )
-        db.add(ref)
-        order.status = "refunded"
-        services.add_event(db, order, "refund_requested", body.model_dump())
-        db.commit()
-        db.refresh(ref)
+        try:
+            ref = services.request_refund(
+                db, order, amount_cents=body.amount_cents, reason=body.reason
+            )
+        except services.OrderError as e:
+            raise HTTPException(e.code, str(e)) from e
         return {"id": ref.id, "status": ref.status, "amount_cents": ref.amount_cents}
 
     @app.get("/v1/circuit")
@@ -284,5 +267,5 @@ def main() -> None:
     )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
