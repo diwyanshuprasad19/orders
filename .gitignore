@@ -19,3 +19,4 @@ build/
 !.env.example
 *.pem
 *.key
+credentials.json

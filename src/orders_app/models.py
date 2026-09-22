@@ -16,7 +16,7 @@ def _uuid() -> str:
 class Customer(Base):
     __tablename__ = "customers"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     orders: Mapped[list[Order]] = relationship(back_populates="customer")
@@ -25,11 +25,11 @@ class Customer(Base):
 class Order(Base):
     __tablename__ = "orders"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"))
-    sku: Mapped[str] = mapped_column(String(64), nullable=False)
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"), index=True)
+    sku: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="pending")
-    reservation_id: Mapped[str | None] = mapped_column(String(36))
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    reservation_id: Mapped[str | None] = mapped_column(String(36), index=True)
     total_cents: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -44,8 +44,8 @@ class Order(Base):
 class OrderEvent(Base):
     __tablename__ = "order_events"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
-    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     payload: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     order: Mapped[Order] = relationship(back_populates="events")
@@ -54,9 +54,9 @@ class OrderEvent(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="captured")
+    status: Mapped[str] = mapped_column(String(32), default="captured", index=True)
     provider_ref: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     order: Mapped[Order] = relationship(back_populates="payments")
@@ -65,10 +65,10 @@ class Payment(Base):
 class Shipment(Base):
     __tablename__ = "shipments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
     carrier: Mapped[str] = mapped_column(String(64), default="UPS")
-    tracking: Mapped[str | None] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(32), default="label_created")
+    tracking: Mapped[str | None] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="label_created", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     order: Mapped[Order] = relationship(back_populates="shipments")
 
@@ -76,8 +76,8 @@ class Shipment(Base):
 class Refund(Base):
     __tablename__ = "refunds"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     reason: Mapped[str] = mapped_column(String(256), default="customer_request")
-    status: Mapped[str] = mapped_column(String(32), default="pending")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

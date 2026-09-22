@@ -18,7 +18,7 @@ class CustomerOut(BaseModel):
 
 
 class OrderCreate(BaseModel):
-    sku: str
+    sku: str = Field(min_length=1, max_length=64)
     qty: int = Field(gt=0)
     customer_id: str | None = None
     unit_price_cents: int = 0
