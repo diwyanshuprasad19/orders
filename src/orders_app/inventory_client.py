@@ -78,5 +78,25 @@ class InventoryClient:
 
         return self.breaker.call(_call)
 
+    def release(self, reservation_id: str) -> dict[str, Any]:
+        def _call() -> dict[str, Any]:
+            r = self._client.post(
+                f"{self.base_url}/release",
+                json={"reservation_id": reservation_id},
+                headers=self._headers(),
+            )
+            if r.status_code >= 500:
+                r.raise_for_status()
+            try:
+                data = r.json() if r.content else {}
+            except ValueError as exc:
+                raise ConnectionError(f"inventory returned invalid JSON: {exc}") from exc
+            if not isinstance(data, dict):
+                data = {"error": "invalid_payload", "raw": str(data)}
+            data["http_status"] = r.status_code
+            return data
+
+        return self.breaker.call(_call)
+
     def close(self) -> None:
         self._client.close()

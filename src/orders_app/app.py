@@ -105,7 +105,7 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         if not order:
             raise HTTPException(404, "not found")
         try:
-            return services.update_status(db, order, body.status)
+            return services.update_status(db, order, body.status, client=client)
         except services.OrderError as e:
             raise HTTPException(e.code, str(e)) from e
 
@@ -115,7 +115,7 @@ def create_app(inventory: InventoryClient | None = None) -> FastAPI:
         if not order:
             raise HTTPException(404, "not found")
         try:
-            return services.update_status(db, order, "cancelled")
+            return services.update_status(db, order, "cancelled", client=client)
         except services.OrderError as e:
             raise HTTPException(e.code, str(e)) from e
 

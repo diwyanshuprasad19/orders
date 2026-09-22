@@ -54,6 +54,11 @@ class FakeTransport(httpx.BaseTransport):
                     "reservation_id": "r1",
                 },
             )
+        if request.url.path == "/release":
+            return httpx.Response(
+                200,
+                json={"reservation_id": "r1", "status": "released"},
+            )
         return httpx.Response(404, json={"error": "nope"})
 
 
@@ -516,3 +521,118 @@ def test_legacy_create_order_when_create_fails(client, monkeypatch):
     monkeypatch.setattr(services, "create_order", boom)
     r = client.post("/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 10})
     assert r.status_code == 409
+
+
+def test_cancel_releases_reservation(client):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    assert created.status_code == 201
+    oid = created.json()["id"]
+    assert client.post(f"/v1/orders/{oid}/cancel").status_code == 200
+
+
+def test_release_client_edges_and_commit_compensate():
+    from unittest.mock import MagicMock
+
+    from orders_app.inventory_client import InventoryClient
+    from orders_app import services
+
+    class ReleaseTransport(httpx.BaseTransport):
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/release":
+                if self.mode == "5xx":
+                    return httpx.Response(500, json={"error": "boom"})
+                if self.mode == "bad_json":
+                    return httpx.Response(200, content=b"{bad")
+                if self.mode == "list":
+                    return httpx.Response(200, json=["x"])
+                return httpx.Response(409, json={"error": "reservation not held"})
+            return httpx.Response(404)
+
+    inv = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ReleaseTransport("ok")
+    )
+    assert inv.release("r1")["http_status"] == 409
+
+    inv_list = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ReleaseTransport("list")
+    )
+    assert inv_list.release("r1")["error"] == "invalid_payload"
+
+    inv_bad = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ReleaseTransport("bad_json")
+    )
+    with pytest.raises(ConnectionError):
+        inv_bad.release("r1")
+
+    inv5 = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ReleaseTransport("5xx")
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        inv5.release("r1")
+
+    # create_order compensates when db.commit fails
+    db = MagicMock()
+    db.flush.return_value = None
+    db.commit.side_effect = RuntimeError("db down")
+    client = MagicMock()
+    client.get_stock.return_value = {"available": 10, "http_status": 200}
+    client.reserve.return_value = {"reservation_id": "rx", "http_status": 200}
+    client.release.return_value = {"http_status": 200}
+    with pytest.raises(RuntimeError):
+        services.create_order(
+            db, client, sku="W", qty=1, customer_id=None, unit_price_cents=10
+        )
+    client.release.assert_called_with("rx")
+
+
+def test_update_status_release_error_paths():
+    from unittest.mock import MagicMock
+
+    from orders_app import services
+    from orders_app.inventory_client import CircuitOpenError
+
+    order = MagicMock()
+    order.status = "confirmed"
+    order.reservation_id = "r1"
+    db = MagicMock()
+
+    client = MagicMock()
+    client.release.side_effect = CircuitOpenError(2.0)
+    with pytest.raises(services.OrderError) as e:
+        services.update_status(db, order, "cancelled", client=client)
+    assert e.value.code == 503
+
+    client2 = MagicMock()
+    client2.release.side_effect = RuntimeError("down")
+    with pytest.raises(services.OrderError) as e2:
+        services.update_status(db, order, "cancelled", client=client2)
+    assert e2.value.code == 502
+
+    client3 = MagicMock()
+    client3.release.return_value = {"http_status": 409, "error": "reservation not held"}
+    # idempotent — allowed
+    out = services.update_status(db, order, "cancelled", client=client3)
+    assert out is order
+
+    client4 = MagicMock()
+    client4.release.return_value = {"http_status": 409, "error": "other boom"}
+    order2 = MagicMock()
+    order2.status = "confirmed"
+    order2.reservation_id = "r2"
+    with pytest.raises(services.OrderError) as e4:
+        services.update_status(db, order2, "cancelled", client=client4)
+    assert e4.value.code == 409
+
+    # compensate path when release itself fails after commit failure
+    db2 = MagicMock()
+    db2.flush.return_value = None
+    db2.commit.side_effect = RuntimeError("db down")
+    client5 = MagicMock()
+    client5.get_stock.return_value = {"available": 10, "http_status": 200}
+    client5.reserve.return_value = {"reservation_id": "rz", "http_status": 200}
+    client5.release.side_effect = RuntimeError("release failed")
+    with pytest.raises(RuntimeError, match="db down"):
+        services.create_order(db2, client5, sku="W", qty=1, customer_id=None, unit_price_cents=1)
