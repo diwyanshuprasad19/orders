@@ -59,6 +59,11 @@ class FakeTransport(httpx.BaseTransport):
                 200,
                 json={"reservation_id": "r1", "status": "released"},
             )
+        if request.url.path == "/consume":
+            return httpx.Response(
+                200,
+                json={"reservation_id": "r1", "status": "consumed"},
+            )
         return httpx.Response(404, json={"error": "nope"})
 
 
@@ -175,6 +180,20 @@ def test_pay_ship_events(client):
     assert "created" in types
     assert "paid" in types
     assert "shipped" in types
+    assert "inventory_consumed" in types
+
+
+def test_ship_consume_failure_blocks(client, monkeypatch):
+    created = client.post("/v1/orders", json={"sku": "WIDGET-1", "qty": 1, "unit_price_cents": 50})
+    oid = created.json()["id"]
+    assert client.post(f"/v1/orders/{oid}/pay", json={}).status_code == 200
+
+    def boom(_rid):
+        return {"http_status": 409, "error": "stock inconsistent for consume"}
+
+    monkeypatch.setattr(client.inv, "consume", boom)
+    assert client.post(f"/v1/orders/{oid}/ship", json={"carrier": "UPS"}).status_code == 409
+    assert client.get(f"/v1/orders/{oid}").json()["status"] == "paid"
 
 
 def test_cannot_pay_cancelled(client):
@@ -636,3 +655,80 @@ def test_update_status_release_error_paths():
     client5.release.side_effect = RuntimeError("release failed")
     with pytest.raises(RuntimeError, match="db down"):
         services.create_order(db2, client5, sku="W", qty=1, customer_id=None, unit_price_cents=1)
+
+
+def test_consume_client_edges_and_ship_errors():
+    from unittest.mock import MagicMock
+
+    from orders_app import services
+    from orders_app.inventory_client import CircuitOpenError, InventoryClient
+
+    class ConsumeTransport(httpx.BaseTransport):
+        def __init__(self, mode: str) -> None:
+            self.mode = mode
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/consume":
+                if self.mode == "5xx":
+                    return httpx.Response(500, json={"error": "boom"})
+                if self.mode == "bad_json":
+                    return httpx.Response(200, content=b"{bad")
+                if self.mode == "list":
+                    return httpx.Response(200, json=["x"])
+                return httpx.Response(200, json={"reservation_id": "r1", "status": "consumed"})
+            return httpx.Response(404)
+
+    inv = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ConsumeTransport("ok")
+    )
+    assert inv.consume("r1")["status"] == "consumed"
+
+    inv_list = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ConsumeTransport("list")
+    )
+    assert inv_list.consume("r1")["error"] == "invalid_payload"
+
+    inv_bad = InventoryClient(
+        base_url="http://inventory.test",
+        failure_threshold=5,
+        transport=ConsumeTransport("bad_json"),
+    )
+    with pytest.raises(ConnectionError):
+        inv_bad.consume("r1")
+
+    inv5 = InventoryClient(
+        base_url="http://inventory.test", failure_threshold=5, transport=ConsumeTransport("5xx")
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        inv5.consume("r1")
+
+    order = MagicMock()
+    order.status = "paid"
+    order.reservation_id = "r1"
+    db = MagicMock()
+
+    client = MagicMock()
+    client.consume.side_effect = CircuitOpenError(1.5)
+    with pytest.raises(services.OrderError) as e:
+        services.create_shipment(db, order, carrier="UPS", tracking=None, client=client)
+    assert e.value.code == 503
+
+    client2 = MagicMock()
+    client2.consume.side_effect = RuntimeError("down")
+    with pytest.raises(services.OrderError) as e2:
+        services.create_shipment(db, order, carrier="UPS", tracking=None, client=client2)
+    assert e2.value.code == 502
+
+    client3 = MagicMock()
+    client3.consume.return_value = {"http_status": 409, "error": "reservation not held"}
+    # idempotent wording allowed
+    out = services.create_shipment(db, order, carrier="UPS", tracking="t", client=client3)
+    assert out is not None
+
+    client4 = MagicMock()
+    client4.consume.return_value = {"http_status": 200, "status": "consumed"}
+    order2 = MagicMock()
+    order2.status = "paid"
+    order2.reservation_id = "r2"
+    services.create_shipment(db, order2, carrier="DHL", tracking=None, client=client4)
+    client4.consume.assert_called_with("r2")

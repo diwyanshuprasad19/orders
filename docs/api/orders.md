@@ -135,7 +135,8 @@ Allowed only if `paid` ∈ transitions from current status (e.g. from `confirmed
 | carrier | `"UPS"` |
 | tracking | null |
 
-**409** if cannot ship from status · Creates `Shipment`, status `shipped`.
+**409** if cannot ship from status · Creates `Shipment`, status `shipped`.  
+If the order has a `reservation_id`, calls inventory `POST /consume` first (event `inventory_consumed`). Ship fails with 502/503/409 if consume fails (except idempotent already-consumed).
 
 ---
 
