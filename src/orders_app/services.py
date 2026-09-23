@@ -159,9 +159,27 @@ def create_shipment(
     *,
     carrier: str,
     tracking: str | None,
+    client: InventoryClient | None = None,
 ) -> models.Shipment:
     if "shipped" not in VALID_TRANSITIONS.get(order.status, set()):
         raise OrderError(f"cannot ship from status {order.status}", 409)
+    if order.reservation_id and client is not None:
+        try:
+            consumed = client.consume(order.reservation_id)
+        except CircuitOpenError as e:
+            raise OrderError(f"inventory_unavailable retry_after={e.retry_after}", 503) from e
+        except Exception as e:
+            raise OrderError(f"inventory_error: {e}", 502) from e
+        if int(consumed.get("http_status", 200)) >= 400:
+            err = str(consumed.get("error", ""))
+            # Idempotent: already consumed is OK for ship retries.
+            if "not held" not in err and "not found" not in err:
+                status = str(consumed.get("status", ""))
+                if status != "consumed":
+                    raise OrderError(
+                        consumed.get("error", "consume_failed"), int(consumed["http_status"])
+                    )
+        add_event(db, order, "inventory_consumed", {"reservation_id": order.reservation_id})
     ship_row = models.Shipment(
         order_id=order.id,
         carrier=carrier,
