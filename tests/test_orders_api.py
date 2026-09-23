@@ -653,8 +653,24 @@ def test_update_status_release_error_paths():
     client5.get_stock.return_value = {"available": 10, "http_status": 200}
     client5.reserve.return_value = {"reservation_id": "rz", "http_status": 200}
     client5.release.side_effect = RuntimeError("release failed")
-    with pytest.raises(RuntimeError, match="db down"):
+    with pytest.raises(services.OrderError) as e5:
         services.create_order(db2, client5, sku="W", qty=1, customer_id=None, unit_price_cents=1)
+    assert e5.value.code == 500
+    assert "release_failed" in str(e5.value) or "order_commit_failed" in str(e5.value)
+
+
+def test_create_order_requires_reservation_id():
+    from unittest.mock import MagicMock
+
+    from orders_app import services
+
+    db = MagicMock()
+    client = MagicMock()
+    client.get_stock.return_value = {"available": 10, "http_status": 200}
+    client.reserve.return_value = {"http_status": 200}  # missing reservation_id
+    with pytest.raises(services.OrderError) as e:
+        services.create_order(db, client, sku="W", qty=1, customer_id=None, unit_price_cents=1)
+    assert e.value.code == 502
 
 
 def test_consume_client_edges_and_ship_errors():

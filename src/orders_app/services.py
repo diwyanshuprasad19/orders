@@ -55,12 +55,16 @@ def create_order(
     if int(reserved.get("http_status", 200)) >= 400:
         raise OrderError(reserved.get("error", "reserve_failed"), int(reserved["http_status"]))
 
+    reservation_id = reserved.get("reservation_id")
+    if not reservation_id:
+        raise OrderError("reserve_missing_reservation_id", 502)
+
     order = models.Order(
         customer_id=customer_id,
         sku=sku,
         qty=qty,
         status="confirmed",
-        reservation_id=reserved.get("reservation_id"),
+        reservation_id=str(reservation_id),
         total_cents=unit_price_cents * qty,
     )
     db.add(order)
@@ -69,14 +73,15 @@ def create_order(
     add_event(db, order, "inventory_reserved", {"reservation_id": order.reservation_id})
     try:
         db.commit()
-    except Exception:
+    except Exception as commit_exc:
         db.rollback()
-        rid = reserved.get("reservation_id")
-        if rid:
-            try:
-                client.release(str(rid))
-            except Exception:
-                pass
+        try:
+            client.release(str(reservation_id))
+        except Exception as release_exc:
+            raise OrderError(
+                f"order_commit_failed_and_release_failed: {commit_exc}; release={release_exc}",
+                500,
+            ) from release_exc
         raise
     db.refresh(order)
     return order
@@ -103,25 +108,32 @@ def update_status(
     allowed = VALID_TRANSITIONS.get(order.status, set())
     if new_status not in allowed and new_status != order.status:
         raise OrderError(f"invalid transition {order.status}->{new_status}", 409)
-    if new_status == "cancelled" and order.reservation_id and client is not None:
+    # Commit cancel first, then release — avoids oversell if commit fails after release.
+    pending_release = (
+        order.reservation_id
+        if new_status == "cancelled" and order.reservation_id and client is not None
+        else None
+    )
+    order.status = new_status
+    add_event(db, order, "status_changed", {"status": new_status})
+    db.commit()
+    db.refresh(order)
+    if pending_release and client is not None:
         try:
-            released = client.release(order.reservation_id)
+            released = client.release(pending_release)
         except CircuitOpenError as e:
             raise OrderError(f"inventory_unavailable retry_after={e.retry_after}", 503) from e
         except Exception as e:
             raise OrderError(f"inventory_error: {e}", 502) from e
         if int(released.get("http_status", 200)) >= 400:
-            # Idempotent release: already released/not held is OK for cancel.
             err = str(released.get("error", ""))
             if "not held" not in err and "not found" not in err:
                 raise OrderError(
                     released.get("error", "release_failed"), int(released["http_status"])
                 )
-        add_event(db, order, "inventory_released", {"reservation_id": order.reservation_id})
-    order.status = new_status
-    add_event(db, order, "status_changed", {"status": new_status})
-    db.commit()
-    db.refresh(order)
+        add_event(db, order, "inventory_released", {"reservation_id": pending_release})
+        db.commit()
+        db.refresh(order)
     return order
 
 
